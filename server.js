@@ -1,53 +1,118 @@
-﻿require("dotenv").config();
+require("dotenv").config();
 
 const express = require("express");
 const OpenAI = require("openai");
+const multer = require("multer");
+const jwt = require("jsonwebtoken");
 
 const app = express();
 
-app.use(express.json());
-
-const openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
+const upload = multer({
+    dest: "uploads/"
 });
 
-app.get("/", (req, res) => {
-    res.send("NVBE AI SERVER RUNNING");
-});
 
-app.post("/chat", async (req, res) => {
-    try {
-        const userMessage = req.body.message;
+function authMiddleware(req, res, next) {
 
-        const completion = await openai.chat.completions.create({
-            model: "gpt-4.1-mini",
-            messages: [
-                {
-                    role: "system",
-                    content: "Bạn là trợ lý AI của Bệnh viện Đa khoa Khu vực Tháp Mười."
-                },
-                {
-                    role: "user",
-                    content: userMessage
-                }
-            ]
-        });
+    const authHeader = req.headers.authorization;
 
-        const reply = completion.choices[0].message.content;
-
-        res.json({
-            reply: reply
-        });
-
-    } catch (error) {
-        console.error(error);
-
-        res.status(500).json({
-            error: "AI SERVER ERROR"
+    if (!authHeader) {
+        return res.status(401).json({
+            error: "TOKEN REQUIRED"
         });
     }
-});
 
-app.listen(3000, () => {
-    console.log("AI Server running at port 3000");
+    const token = authHeader.split(" ")[1];
+
+    try {
+
+        const decoded = jwt.verify(
+            token,
+            process.env.JWT_SECRET
+        );
+
+        req.user = decoded;
+
+        next();
+
+    } catch (error) {
+
+        return res.status(401).json({
+            error: "INVALID TOKEN"
+        });
+    }
+}
+
+
+
+
+    authMiddleware,
+    upload.single("file"),
+    async (req, res) => {
+
+        try {
+
+            if (!req.file) {
+                return res.status(400).json({
+                    error: "NO FILE"
+                });
+            }
+
+            const tempPath = req.file.path;
+
+            const targetPath = path.join(
+                "uploads",
+                req.file.originalname
+            );
+
+            await fs.rename(tempPath, targetPath);
+
+            // PDF EXTRACT
+
+            if (
+                req.file.originalname
+                    .toLowerCase()
+                    .endsWith(".pdf")
+            ) {
+
+                const dataBuffer =
+                    await fs.readFile(targetPath);
+
+                const pdfData =
+                    await pdfParse(dataBuffer);
+
+                console.log(
+                    "PDF extracted:",
+                    pdfData.text.length
+                );
+
+                // Sau này:
+                // chunk
+                // embeddings
+                // vector DB
+            }
+
+            res.json({
+                success: true,
+                filename: req.file.originalname
+            });
+
+        } catch (error) {
+
+            console.log(error);
+
+            res.status(500).json({
+                error: "UPLOAD FAILED"
+            });
+        }
+    }
+
+// =========================
+// SERVER
+// =========================
+
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+    console.log(`NVBE-AI running at port ${PORT}`);
 });

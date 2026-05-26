@@ -1,0 +1,24 @@
+[0;1;32m●[0m ssh.service - OpenBSD Secure Shell server
+     Loaded: loaded (]8;;file://instance-nvbe/usr/lib/systemd/system/ssh.service/usr/lib/systemd/system/ssh.service]8;;; [0;1;38;5;185mdisabled[0m; preset: [0;1;32menabled[0m)
+     Active: [0;1;32mactive (running)[0m since Mon 2026-05-25 10:32:25 +07; 23h ago
+TriggeredBy: [0;1;32m●[0m ssh.socket
+       Docs: ]8;;man:sshd(8)man:sshd(8)]8;;
+             ]8;;man:sshd_config(5)man:sshd_config(5)]8;;
+    Process: 1468 ExecStartPre=/usr/sbin/sshd -t (code=exited, status=0/SUCCESS)
+   Main PID: 1470 (sshd)
+      Tasks: 1 (limit: 1107)
+     Memory: 8.5M (peak: 50.6M)
+        CPU: 4min 35.817s
+     CGroup: /system.slice/ssh.service
+             └─[0;38;5;245m1470 "sshd: /usr/sbin/sshd -D [listener] 0 of 10-100 startups"[0m
+
+May 26 09:41:46 instance-nvbe sshd[301584]: Connection closed by invalid user admin 139.19.117.129 port 39958 [preauth]
+May 26 09:45:35 instance-nvbe sshd[302359]: [0;1;39m[0;1;31m[0;1;39mpam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=45.148.10.151  user=root[0m
+May 26 09:45:37 instance-nvbe sshd[302359]: Failed password for root from 45.148.10.151 port 9434 ssh2
+May 26 09:45:41 instance-nvbe sshd[302359]: Failed password for root from 45.148.10.151 port 9434 ssh2
+May 26 09:45:44 instance-nvbe sshd[302359]: Failed password for root from 45.148.10.151 port 9434 ssh2
+May 26 09:45:47 instance-nvbe sshd[302359]: Failed password for root from 45.148.10.151 port 9434 ssh2
+May 26 09:45:50 instance-nvbe sshd[302359]: Failed password for root from 45.148.10.151 port 9434 ssh2
+May 26 09:45:52 instance-nvbe sshd[302359]: Connection reset by authenticating user root 45.148.10.151 port 9434 [preauth]
+May 26 09:45:52 instance-nvbe sshd[302359]: [0;1;39m[0;1;31m[0;1;39mPAM 4 more authentication failures; logname= uid=0 euid=0 tty=ssh ruser= rhost=45.148.10.151  user=root[0m
+May 26 09:45:52 instance-nvbe sshd[302359]: [0;1;39m[0;1;31m[0;1;39mPAM service(sshd) ignoring max retries; 5 > 3[0m

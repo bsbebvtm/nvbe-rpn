@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title> NVBE AI Chat </title>
+
+    <style>
+
+        *{
+            margin:0;
+            padding:0;
+            box-sizing:border-box;
+        }
+
+        body{
+            font-family:Arial, Helvetica, sans-serif;
+            background:#f1f5f9;
+            height:100vh;
+            display:flex;
+            justify-content:center;
+            align-items:center;
+        }
+
+        .chat-container{
+            width:95%;
+            max-width:900px;
+            height:95vh;
+            background:white;
+            border-radius:20px;
+            box-shadow:0 0 20px rgba(0,0,0,0.1);
+            display:flex;
+            flex-direction:column;
+            overflow:hidden;
+        }
+
+        .header{
+            background:#2563eb;
+            color:white;
+            padding:20px;
+            text-align:center;
+            font-size:24px;
+            font-weight:bold;
+        }
+
+        .sub-header{
+            font-size:14px;
+            margin-top:5px;
+            opacity:0.9;
+        }
+
+        #chatbox{
+            flex:1;
+            padding:20px;
+            overflow-y:auto;
+            background:#f8fafc;
+        }
+
+        .message{
+            margin-bottom:20px;
+            display:flex;
+            flex-direction:column;
+        }
+
+        .user-message{
+            align-items:flex-end;
+        }
+
+        .ai-message{
+            align-items:flex-start;
+        }
+
+        .bubble{
+            max-width:75%;
+            padding:15px;
+            border-radius:15px;
+            line-height:1.5;
+            font-size:16px;
+        }
+
+        .user-bubble{
+            background:#25eb;
+            color:white;
+            border-bottom-right-radius:5px;
+        }
+
+        .ai-bubble{
+            background:white;
+            border:1px solid #ddd;
+            color:#111827;
+            border-bottom-left-radius:5px;
+        }
+
+        .typing{
+            font-style:italic;
+            color:#666;
+            margin-top:5px;
+        }
+
+        .input-area{
+            display:flex;
+            padding:20px;
+            border-top:1px solid #ddd;
+            background:white;
+        }
+
+        #message{
+            flex:1;
+            padding:15px;
+            border:3px solid #ccc;
+            border-radius:40px;
+            font-size:16px;
+            outline:none;
+        }
+
+        #message:focus{
+            border-color:#2563eb;
+        }
+
+        button{
+            margin-left:5px;
+            padding:15px 50px;
+            border:none;
+            background:#9333;
+            color:black;
+            border-radius:10px;
+            cursor:pointer;
+            font-size:16px;
+            font-weight:bold;
+        }
+
+        button:hover{
+            background:#1d4ed8;
+        }
+
+        @media(max-width:600px){
+
+            .bubble{
+                max-width:90%;
+            }
+
+            .header{
+                font-size:20px;
+            }
+
+        }
+
+    </style>
+
+</head>
+
+<body>
+
+<div class="chat-container">
+    <div class="header">
+        AI & Dr BÉ 
+        <div class="sub-header">
+            Trợ lý AI Bệnh viện Đa khoa Khu vực Tháp Mười
+        </div>
+    </div>
+
+    <div id="chatbox"></div>
+
+    <div class="input-area">
+
+        <input
+            type="text"
+            id="message"
+            placeholder="Nhập câu hỏi..."
+        >
+
+        <button onclick="sendMessage()">
+            Gửi
+        </button>
+</div>
+ 	<div style="margin-top:20px;">
+
+    <input
+        type="file"
+        id="fileInput">
+
+    <button onclick="uploadFile()">
+      	 
+	Upload Knowledge
+
+    </button>
+
+</div>
+
+<script>
+
+let sessionId = localStorage.getItem("sessionId");
+
+const input = document.getElementById("message");
+
+input.addEventListener("keypress", function(event){
+
+    if(event.key === "Enter"){
+        sendMessage();
+    }
+
+});
+
+async function sendMessage(){
+
+    const message = input.value.trim();
+
+    if(!message) return;
+
+    const chatbox = document.getElementById("chatbox");
+
+    chatbox.innerHTML += `
+        <div class="message user-message">
+            <div class="bubble user-bubble">
+                ${message}
+            </div>
+        </div>
+    `;
+
+    input.value = "";
+
+    chatbox.innerHTML += `
+        <div class="message ai-message" id="typing">
+            <div class="typing">
+                AI đang trả lời...
+            </div>
+        </div>
+    `;
+
+    chatbox.scrollTop = chatbox.scrollHeight;
+
+    try{
+
+        const response = await fetch("/chat",{
+            method:"POST",
+            headers:{
+                "Content-Type":"application/json"
+            },
+            body:JSON.stringify({
+                message:message,
+                sessionId:sessionId
+            })
+        });
+
+        const data = await response.json();
+
+        if(data.sessionId){
+
+            sessionId = data.sessionId;
+
+            localStorage.setItem(
+                "sessionId",
+                sessionId
+            );
+
+        }
+
+        document.getElementById("typing").remove();
+
+        chatbox.innerHTML += `
+            <div class="message ai-message">
+                <div class="bubble ai-bubble">
+                    ${data.reply}
+                </div>
+            </div>
+        `;
+
+        chatbox.scrollTop = chatbox.scrollHeight;
+
+    }catch(error){
+
+        document.getElementById("typing").remove();
+
+        chatbox.innerHTML += `
+            <div class="message ai-message">
+                <div class="bubble ai-bubble">
+                    Lỗi kết nối AI server.
+                </div>
+            </div>
+        `;
+
+    }
+
+}
+
+async function uploadFile(){
+
+    const fileInput =
+        document.getElementById(
+            "fileInput"
+        );
+
+    const file =
+        fileInput.files[0];
+
+    if(!file){
+
+        alert("Chọn file trước.");
+
+        return;
+    }
+
+    const formData =
+        new FormData();
+
+    formData.append(
+        "file",
+        file
+    );
+
+    const response =
+        await fetch(
+            "/upload",
+            {
+                method:"POST",
+                body:formData
+            }
+        );
+
+    const data =
+        await response.json();
+
+    if(data.success){
+
+        alert(
+            "Upload thành công!"
+        );
+
+    }else{
+
+        alert(
+            "Upload thất bại."
+        );
+
+    }
+
+}
+
+window.onload = async function(){
+
+    if(!sessionId) return;
+
+    try{
+
+        const response =
+            await fetch(
+                `/history/${sessionId}`
+            );
+
+        const history =
+            await response.json();
+
+        const chatbox =
+            document.getElementById(
+                "chatbox"
+            );
+
+        history.forEach((item)=>{
+
+            if(item.role === "user"){
+
+                chatbox.innerHTML += `
+                    <div class="message user-message">
+                        <div class="bubble user-bubble">
+                            ${item.message}
+                        </div>
+                    </div>
+                `;
+
+            }else{
+
+                chatbox.innerHTML += `
+                    <div class="message ai-message">
+                        <div class="bubble ai-bubble">
+                            ${item.message}
+                        </div>
+                    </div>
+                `;
+
+            }
+
+        });
+
+        chatbox.scrollTop =
+            chatbox.scrollHeight;
+
+    }catch(error){
+
+        console.log(error);
+
+    }
+
+};
+
+
+</script>
+
+</div>
+
+</body>
+
+</html>

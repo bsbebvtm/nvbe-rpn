@@ -1,0 +1,348 @@
+﻿require("dotenv").config();
+      
+const express = require("express");
+const OpenAI = require("openai");
+const db = require("./database");
+const { v4: uuidv4 } = require("uuid");
+const fs = require("fs");
+const multer = require("multer");
+const pdfParse = require("pdf-parse");
+
+const app = express();
+
+const upload = multer({
+    dest: "uploads/"
+});
+
+app.use(express.static("public"));
+app.use(express.json());
+
+const openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+});
+
+
+
+let hospitalKnowledge = "";
+
+async function loadKnowledge() {
+
+    hospitalKnowledge = "";
+
+    const files =
+        fs.readdirSync("./uploads");
+
+    for (const file of files) {
+
+        const filePath =
+            `./uploads/${file}`;
+
+        if (file.endsWith(".txt")) {
+
+            const content =
+                fs.readFileSync(
+                    filePath,
+                    "utf8"
+                );
+
+            hospitalKnowledge +=
+                "\n\n" +
+                file +
+                ":\n" +
+                content;
+
+        }
+
+        if (file.endsWith(".pdf")) {
+
+            const dataBuffer =
+                fs.readFileSync(filePath);
+
+            const pdfData =
+                await pdfParse(dataBuffer);
+
+            hospitalKnowledge +=
+                "\n\n" +
+                file +
+                ":\n" +
+                pdfData.text;
+
+        }
+
+    }
+
+    console.log("Knowledge loaded.");
+
+}
+
+loadKnowledge();
+
+app.post("/chat", async (req, res) => {
+
+    try {
+
+        const userMessage = req.body.message
+	
+
+
+        let sessionId = req.body.sessionId;
+
+        if (!sessionId) {
+
+            sessionId = uuidv4();
+        }
+
+     
+
+
+        
+        db.run(
+            "INSERT INTO messages (session_id, role, message) VALUES (?, ?, ?)",
+            [sessionId, "user", userMessage]
+        );
+
+
+const rows = await new Promise((resolve, reject) => {
+
+    db.all(
+        "SELECT role, message FROM messages WHERE session_id = ? ORDER BY id ASC",
+        [sessionId],
+        (err, rows) => {
+
+            if(err){
+                reject(err);
+            }else{
+                resolve(rows);
+            }
+
+        }
+    );
+
+});
+
+let messages = [
+    {
+        role: "system",
+        content: `
+Bạn là trợ lý AI của Bệnh viện Đa khoa Khu vực Tháp Mười.
+
+Thông tin bệnh viện:
+
+${hospitalKnowledge}
+
+Nhiệm vụ:
+- hỗ trợ người bệnh
+- nhớ thông tin người dùng trong lịch sử chat
+- trả lời theo thông tin bệnh viện
+- hướng dẫn khám bệnh
+- trả lời lịch sự, dễ hiểu
+`
+    }
+];
+
+rows.forEach((row) => {
+
+    messages.push({
+        role: row.role,
+        content: row.message
+    });
+
+});
+
+messages.push({
+    role: "user",
+    content: userMessage
+});
+
+        const completion = await openai.chat.completions.create({
+            model: "gpt-4.1-mini",
+            messages: messages
+        });
+
+        const reply =
+            completion.choices[0].message.content;
+        
+        db.run(
+            "INSERT INTO messages (session_id, role, message) VALUES (?, ?, ?)",
+            [sessionId, "assistant", reply]
+        );
+
+        res.json({
+            reply: reply,
+            sessionId: sessionId
+        });
+
+    } catch (error) {
+
+        console.error(error);
+
+        res.status(500).json({
+            error: "AI SERVER ERROR"
+        });
+
+    }
+
+});
+
+app.get("/history/:sessionId", (req, res) => {
+
+    const sessionId = req.params.sessionId;
+
+    db.all(
+        "SELECT role, message FROM messages WHERE session_id = ? ORDER BY id ASC",
+        [sessionId],
+        (err, rows) => {
+
+            if (err) {
+
+                res.status(500).json({
+                    error: err.message
+                });
+
+            } else {
+
+                res.json(rows);
+
+            }
+
+        }
+    );
+
+});
+
+app.post(
+    "/upload",
+    upload.single("file"),
+    async (req, res) => {
+
+        try {
+
+            const tempPath = req.file.path;
+
+            const targetPath =
+                `uploads/${req.file.originalname}`;
+
+            fs.renameSync(
+                tempPath,
+                targetPath
+            );
+
+            await loadKnowledge();
+
+            console.log(
+                "Knowledge updated."
+            );
+
+            res.json({
+                success: true
+            });
+
+        } catch (error) {
+
+            console.log(error);
+
+            res.status(500).json({
+                error: "Upload failed"
+            });
+
+        }
+
+    }
+);
+
+app.listen(3000, () => {
+    console.log("AI Server running at port 3000");
+});
+const express = require("express");
+const OpenAI = require("openai");
+const db = require("./database");
+const { v4: uuidv4 } = require("uuid");
+const fs = require("fs");
+const multer = require("multer");
+const pdfParse = require("pdf-parse");
+
+const app = express();
+
+const upload = multer({
+    dest: "uploads/"
+});
+
+app.use(express.static("public"));
+app.use(express.json());
+
+const openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+});
+
+
+
+let hospitalKnowledge = "";const express = require("express");
+const OpenAI = require("openai");
+const db = require("./database");
+const { v4: uuidv4 } = require("uuid");
+const fs = require("fs");
+const multer = require("multer");
+const pdfParse = require("pdf-parse");
+
+const app = express();
+
+const upload = multer({
+    dest: "uploads/"
+});
+
+app.use(express.static("public"));
+app.use(express.json());
+
+const openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+});
+
+
+
+let hospitalKnowledge = "";const express = require("express");
+const OpenAI = require("openai");
+const db = require("./database");
+const { v4: uuidv4 } = require("uuid");
+const fs = require("fs");
+const multer = require("multer");
+const pdfParse = require("pdf-parse");
+
+const app = express();
+
+const upload = multer({
+    dest: "uploads/"
+});
+
+app.use(express.static("public"));
+app.use(express.json());
+
+const openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+});
+
+
+
+let hospitalKnowledge = "";const express = require("express");
+const OpenAI = require("openai");
+const db = require("./database");
+const { v4: uuidv4 } = require("uuid");
+const fs = require("fs");
+const multer = require("multer");
+const pdfParse = require("pdf-parse");
+
+const app = express();
+
+const upload = multer({
+    dest: "uploads/"
+});
+
+app.use(express.static("public"));
+app.use(express.json());
+
+const openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY,
+});
+
+
+
+let hospitalKnowledge = "";
