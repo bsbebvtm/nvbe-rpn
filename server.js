@@ -24,7 +24,7 @@ const upload = multer({
     limits: { fileSize: 100 * 1024 * 1024 }
 });
 
-// OpenAI client - GPT-4 MINI
+// OpenAI client
 const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY
 });
@@ -34,17 +34,62 @@ const conversationHistory = new Map();
 const knowledgeCache = new Map();
 
 // ========================
+// FUZZY MATCHING HELPER
+// ========================
+
+// Levenshtein distance - độ gần giống của 2 string
+function levenshteinDistance(str1, str2) {
+    const len1 = str1.length;
+    const len2 = str2.length;
+    const matrix = [];
+
+    for (let i = 0; i <= len2; i++) {
+        matrix[i] = [i];
+    }
+
+    for (let j = 0; j <= len1; j++) {
+        matrix[0][j] = j;
+    }
+
+    for (let i = 1; i <= len2; i++) {
+        for (let j = 1; j <= len1; j++) {
+            if (str2.charAt(i - 1) === str1.charAt(j - 1)) {
+                matrix[i][j] = matrix[i - 1][j - 1];
+            } else {
+                matrix[i][j] = Math.min(
+                    matrix[i - 1][j - 1] + 1,
+                    matrix[i][j - 1] + 1,
+                    matrix[i - 1][j] + 1
+                );
+            }
+        }
+    }
+
+    return matrix[len2][len1];
+}
+
+// Tính similarity score (0-1, 1 = giống hệt)
+function similarityScore(str1, str2) {
+    const distance = levenshteinDistance(str1.toLowerCase(), str2.toLowerCase());
+    const maxLen = Math.max(str1.length, str2.length);
+    return 1 - (distance / maxLen);
+}
+
+// ========================
 // HELPER FUNCTIONS
 // ========================
 
-// Parse TSV file (Tab-Separated Values)
+// Parse TSV file
 async function parseTSVFile(filePath) {
     try {
         const content = await fs.readFile(filePath, "utf-8");
         const lines = content.split("\n").filter(line => line.trim());
-        const headers = lines[0].split("\t");
         
+        if (lines.length < 1) return null;
+        
+        const headers = lines[0].split("\t");
         const rows = [];
+        
         for (let i = 1; i < lines.length; i++) {
             const cells = lines[i].split("\t");
             const row = {};
@@ -61,7 +106,7 @@ async function parseTSVFile(filePath) {
     }
 }
 
-// Load và cache tất cả knowledge files
+// Load knowledge base
 async function loadKnowledgeBase() {
     try {
         const uploadDir = path.join(__dirname, "uploads");
@@ -89,7 +134,7 @@ async function loadKnowledgeBase() {
     }
 }
 
-// Tìm kiếm trong knowledge base
+// Tìm kiếm với fuzzy matching
 async function searchInKnowledgeBase(question) {
     if (knowledgeCache.size === 0) {
         console.log("⚠️  Knowledge base is empty");
@@ -112,15 +157,35 @@ async function searchInKnowledgeBase(question) {
         for (const row of rows) {
             let matchScore = 0;
             let matchedFields = [];
+            let similarityScores = [];
 
-            // Tính điểm match dựa vào từng column
+            // Tính điểm match
             for (const [key, value] of Object.entries(row)) {
                 const lowerValue = value.toLowerCase();
+                
                 for (const keyword of keywords) {
+                    // Exact match
                     if (lowerValue.includes(keyword)) {
-                        matchScore++;
+                        matchScore += 10;
                         if (!matchedFields.includes(key)) {
                             matchedFields.push(key);
+                        }
+                    }
+                    
+                    // Fuzzy match - tính similarity
+                    const words = lowerValue.split(/\s+/);
+                    for (const word of words) {
+                        const similarity = similarityScore(keyword, word);
+                        if (similarity > 0.7) { // > 70% giống
+                            matchScore += similarity * 5;
+                            if (!matchedFields.includes(key)) {
+                                matchedFields.push(key);
+                            }
+                            similarityScores.push({
+                                keyword,
+                                word,
+                                similarity
+                            });
                         }
                     }
                 }
@@ -131,7 +196,8 @@ async function searchInKnowledgeBase(question) {
                     file: fileName,
                     row: row,
                     score: matchScore,
-                    fields: matchedFields
+                    fields: matchedFields,
+                    similarities: similarityScores
                 });
             }
         }
@@ -142,14 +208,23 @@ async function searchInKnowledgeBase(question) {
 
     if (results.length > 0) {
         console.log(`✅ Found ${results.length} matching rows`);
-        return results.slice(0, 5); // Top 5
+        
+        // In chi tiết match
+        results.slice(0, 3).forEach((r, i) => {
+            console.log(`  Result ${i + 1}: score=${r.score.toFixed(1)}`);
+            r.similarities.forEach(s => {
+                console.log(`    "${s.keyword}" ~ "${s.word}" (${(s.similarity * 100).toFixed(0)}%)`);
+            });
+        });
+        
+        return results.slice(0, 5);
     }
 
     console.log("⚠️  No matching rows found");
     return null;
 }
 
-// Format search results to readable text
+// Format results
 function formatSearchResults(results) {
     if (!results || results.length === 0) return null;
 
@@ -157,6 +232,7 @@ function formatSearchResults(results) {
 
     results.forEach((result, index) => {
         formattedText += `【${result.file}】 - Kết quả ${index + 1}\n`;
+        formattedText += `Độ phù hợp: ${(result.score / 10).toFixed(1)}/10\n`;
         
         for (const [key, value] of Object.entries(result.row)) {
             if (value && value.trim().length > 0) {
@@ -170,7 +246,7 @@ function formatSearchResults(results) {
     return formattedText;
 }
 
-// Gọi OpenAI GPT-4 MINI
+// Gọi OpenAI
 async function callOpenAI(messages) {
     try {
         console.log("🤖 Calling OpenAI GPT-4 MINI...");
@@ -204,7 +280,7 @@ app.get("/", (req, res) => {
     res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-// Upload endpoint
+// Upload
 app.post("/upload", upload.single("file"), async (req, res) => {
     console.log("\n📤 UPLOAD REQUEST");
     
@@ -245,7 +321,7 @@ app.post("/upload", upload.single("file"), async (req, res) => {
     }
 });
 
-// Chat endpoint
+// Chat
 app.post("/chat", async (req, res) => {
     console.log("\n💬 CHAT REQUEST");
     
@@ -261,7 +337,7 @@ app.post("/chat", async (req, res) => {
         const currentSessionId = sessionId || uuidv4();
         let history = conversationHistory.get(currentSessionId) || [];
 
-        // TÌM KIẾM TRONG KNOWLEDGE BASE
+        // SEARCH KNOWLEDGE BASE
         const searchResults = await searchInKnowledgeBase(message);
         let reply = "";
         let source = "gpt";
@@ -303,7 +379,7 @@ Hãy trả lời dựa trên thông tin đã cung cấp. Nếu không tìm thấ
             reply = await callOpenAI(messages);
         }
 
-        // Lưu vào history
+        // Save history
         history.push({ role: "user", content: message });
         history.push({ role: "assistant", content: reply });
         conversationHistory.set(currentSessionId, history);
@@ -326,13 +402,13 @@ Hãy trả lời dựa trên thông tin đã cung cấp. Nếu không tìm thấ
     }
 });
 
-// History endpoint
+// History
 app.get("/history/:sessionId", (req, res) => {
     const history = conversationHistory.get(req.params.sessionId) || [];
     res.json(history);
 });
 
-// Files endpoint
+// Files
 app.get("/files", async (req, res) => {
     try {
         const uploadDir = path.join(__dirname, "uploads");
@@ -373,7 +449,6 @@ fsSync.mkdir(uploadDir, { recursive: true }, (err) => {
     else console.log("✅ Uploads folder ready");
 });
 
-// Start server
 app.listen(PORT, async () => {
     console.log(`\n${"=".repeat(60)}`);
     console.log(`🚀 NVBE-AI running at http://localhost:${PORT}`);
@@ -382,7 +457,6 @@ app.listen(PORT, async () => {
     console.log(`🔑 OpenAI API Key: ${process.env.OPENAI_API_KEY ? "✅ SET" : "❌ NOT SET"}`);
     console.log(`${"=".repeat(60)}\n`);
     
-    // Load knowledge base on startup
     console.log("📚 Loading knowledge base...");
     await loadKnowledgeBase();
     console.log("✅ Knowledge base ready!\n");
