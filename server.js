@@ -10,10 +10,13 @@ const { v4: uuidv4 } = require("uuid");
 
 const app = express();
 
-// Middleware
-app.use(express.json());
+// ========================
+// MIDDLEWARE - RẤT QUAN TRỌNG!
+// ========================
+
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ limit: "50mb", extended: true }));
 app.use(express.static("public"));
-app.use(express.urlencoded({ limit: "50mb" }));
 
 // Upload config
 const upload = multer({
@@ -26,7 +29,7 @@ const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY
 });
 
-// In-memory storage cho conversation history
+// In-memory storage
 const conversationHistory = new Map();
 
 // ========================
@@ -39,11 +42,14 @@ async function readAllKnowledgeFiles() {
         const uploadDir = path.join(__dirname, "uploads");
         
         if (!fsSync.existsSync(uploadDir)) {
+            console.log("📁 Uploads folder not exists yet");
             return "";
         }
 
         const files = await fs.readdir(uploadDir);
         const txtFiles = files.filter(f => f.toLowerCase().endsWith(".txt"));
+
+        console.log(`📖 Found ${txtFiles.length} .txt files: ${txtFiles.join(", ")}`);
 
         let allContent = "";
 
@@ -51,16 +57,17 @@ async function readAllKnowledgeFiles() {
             try {
                 const filePath = path.join(uploadDir, file);
                 const content = await fs.readFile(filePath, "utf-8");
+                console.log(`✓ Read file: ${file} (${content.length} chars)`);
                 allContent += `\n\n【${file}】\n${content}`;
             } catch (err) {
-                console.error(`Lỗi đọc file ${file}:`, err.message);
+                console.error(`✗ Error reading ${file}:`, err.message);
             }
         }
 
         return allContent;
 
     } catch (error) {
-        console.error("Lỗi đọc knowledge files:", error.message);
+        console.error("❌ Error reading knowledge files:", error.message);
         return "";
     }
 }
@@ -69,13 +76,18 @@ async function readAllKnowledgeFiles() {
 async function searchInKnowledgeBase(question) {
     const knowledge = await readAllKnowledgeFiles();
 
-    if (!knowledge) return null;
+    if (!knowledge) {
+        console.log("⚠️  No knowledge base content");
+        return null;
+    }
 
     // Tách câu hỏi thành keywords
     const keywords = question
         .toLowerCase()
         .split(/\s+/)
         .filter(w => w.length > 2);
+
+    console.log(`🔍 Keywords: ${keywords.join(", ")}`);
 
     // Tìm những dòng có chứa keywords
     const lines = knowledge.split("\n");
@@ -85,7 +97,7 @@ async function searchInKnowledgeBase(question) {
         const lineContent = line.toLowerCase();
         const matchCount = keywords.filter(kw => lineContent.includes(kw)).length;
         
-        if (matchCount > 0) {
+        if (matchCount > 0 && line.trim().length > 0) {
             relevantLines.push({
                 text: line.trim(),
                 matches: matchCount
@@ -101,18 +113,20 @@ async function searchInKnowledgeBase(question) {
         const result = relevantLines
             .slice(0, 5)
             .map(r => r.text)
-            .filter(t => t.length > 0)
             .join("\n");
 
+        console.log(`✅ Found ${relevantLines.length} relevant lines`);
         return result.length > 0 ? result : null;
     }
 
+    console.log("⚠️  No matching lines found");
     return null;
 }
 
 // Gọi OpenAI GPT
 async function callOpenAI(messages) {
     try {
+        console.log("🤖 Calling OpenAI...");
         const response = await openai.chat.completions.create({
             model: "gpt-3.5-turbo",
             messages: messages,
@@ -120,11 +134,13 @@ async function callOpenAI(messages) {
             max_tokens: 500
         });
 
-        return response.choices[0].message.content;
+        const reply = response.choices[0].message.content;
+        console.log("✅ OpenAI response received");
+        return reply;
 
     } catch (error) {
-        console.error("OpenAI error:", error.message);
-        return "Xin lỗi, không thể kết nối với OpenAI API.";
+        console.error("❌ OpenAI error:", error.message);
+        return "Xin lỗi, không thể kết nối với OpenAI API. Vui lòng kiểm tra OPENAI_API_KEY.";
     }
 }
 
@@ -132,47 +148,68 @@ async function callOpenAI(messages) {
 // ROUTES
 // ========================
 
-// Serve static files
-app.use(express.static("public"));
+// Home
+app.get("/", (req, res) => {
+    res.sendFile(path.join(__dirname, "public", "index.html"));
+});
 
-// Upload endpoint - KHÔNG cần authentication
+// Upload endpoint - NO AUTHENTICATION
 app.post("/upload", upload.single("file"), async (req, res) => {
+    console.log("\n📤 UPLOAD REQUEST");
+    
     try {
         if (!req.file) {
-            return res.status(400).json({ error: "NO FILE" });
+            console.log("❌ No file provided");
+            return res.status(400).json({ 
+                success: false,
+                error: "NO FILE" 
+            });
         }
 
         const tempPath = req.file.path;
         const originalName = req.file.originalname;
         const targetPath = path.join("uploads", originalName);
 
+        console.log(`📁 Temp path: ${tempPath}`);
+        console.log(`📁 Target path: ${targetPath}`);
+
         // Rename file
         await fs.rename(tempPath, targetPath);
 
-        console.log(`✓ File uploaded: ${originalName}`);
+        // Verify file exists
+        const stats = await fs.stat(targetPath);
+        console.log(`✅ File uploaded successfully: ${originalName} (${stats.size} bytes)`);
 
         res.json({
             success: true,
-            filename: originalName
+            filename: originalName,
+            size: stats.size,
+            message: "Upload thành công!"
         });
 
     } catch (error) {
-        console.error("Upload error:", error);
+        console.error("❌ Upload error:", error);
         res.status(500).json({
+            success: false,
             error: "UPLOAD FAILED",
             details: error.message
         });
     }
 });
 
-// Chat endpoint - Trả lời dựa vào file hoặc GPT
+// Chat endpoint
 app.post("/chat", async (req, res) => {
+    console.log("\n💬 CHAT REQUEST");
+    
     try {
         const { message, sessionId } = req.body;
 
         if (!message) {
+            console.log("❌ No message provided");
             return res.status(400).json({ error: "NO MESSAGE" });
         }
+
+        console.log(`👤 User: "${message}"`);
 
         const currentSessionId = sessionId || uuidv4();
 
@@ -180,14 +217,15 @@ app.post("/chat", async (req, res) => {
         let history = conversationHistory.get(currentSessionId) || [];
 
         // 1️⃣ TÌM KIẾM TRONG FILE .TXT
-        console.log(`\n🔍 Searching: "${message}"`);
         const knowledgeResult = await searchInKnowledgeBase(message);
 
         let reply = "";
+        let source = "gpt";
 
         if (knowledgeResult) {
             // Tìm được từ file → Trả lời dựa vào file
-            console.log("✓ Found in knowledge base");
+            console.log("📖 Using KNOWLEDGE BASE");
+            source = "knowledge_base";
             
             const systemPrompt = `Bạn là trợ lý AI của Bệnh viện Đa khoa Khu vực Tháp Mười.
 Dựa vào thông tin sau từ cơ sở dữ liệu bệnh viện, hãy trả lời câu hỏi của người dùng:
@@ -206,7 +244,8 @@ Hãy trả lời ngắn gọn, chính xác dựa vào thông tin trên. Nếu th
 
         } else {
             // Không tìm được → Dùng GPT để trả lời general
-            console.log("✗ Not found in knowledge base, using GPT");
+            console.log("🤖 Using GPT (no knowledge found)");
+            source = "gpt";
             
             history.push({ role: "user", content: message });
 
@@ -226,14 +265,17 @@ Hãy trả lời ngắn gọn, chính xác dựa vào thông tin trên. Nếu th
         history.push({ role: "assistant", content: reply });
         conversationHistory.set(currentSessionId, history);
 
+        console.log(`🤖 AI: "${reply.substring(0, 50)}..."`);
+        console.log(`📊 Source: ${source}\n`);
+
         res.json({
             reply: reply,
             sessionId: currentSessionId,
-            source: knowledgeResult ? "knowledge_base" : "gpt"
+            source: source
         });
 
     } catch (error) {
-        console.error("Chat error:", error);
+        console.error("❌ Chat error:", error);
         res.status(500).json({
             error: "CHAT FAILED",
             details: error.message
@@ -284,10 +326,15 @@ const PORT = process.env.PORT || 3000;
 // Tạo thư mục uploads
 const uploadDir = path.join(__dirname, "uploads");
 fsSync.mkdir(uploadDir, { recursive: true }, (err) => {
-    if (err) console.error("Lỗi tạo folder uploads:", err);
+    if (err) console.error("❌ Error creating uploads folder:", err);
+    else console.log("✅ Uploads folder ready");
 });
 
+// Start server
 app.listen(PORT, () => {
-    console.log(`\n🚀 NVBE-AI running at http://localhost:${PORT}`);
-    console.log(`📁 Upload directory: ${uploadDir}\n`);
+    console.log(`\n${"=".repeat(50)}`);
+    console.log(`🚀 NVBE-AI running at http://localhost:${PORT}`);
+    console.log(`📁 Upload directory: ${uploadDir}`);
+    console.log(`🔑 OpenAI API Key: ${process.env.OPENAI_API_KEY ? "✅ SET" : "❌ NOT SET"}`);
+    console.log(`${"=".repeat(50)}\n`);
 });
