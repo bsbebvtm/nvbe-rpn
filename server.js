@@ -3,90 +3,128 @@ require("dotenv").config();
 const express = require("express");
 const OpenAI = require("openai");
 const multer = require("multer");
-const jwt = require("jsonwebtoken");
 const fs = require("fs").promises;
+const fsSync = require("fs");
 const path = require("path");
-const { createReadStream } = require("fs");
+const { v4: uuidv4 } = require("uuid");
 
 const app = express();
 
 // Middleware
 app.use(express.json());
+app.use(express.static("public"));
 app.use(express.urlencoded({ limit: "50mb" }));
 
-// Upload config - Lưu file vào thư mục uploads
+// Upload config
 const upload = multer({
     dest: "uploads/",
-    limits: {
-        fileSize: 100 * 1024 * 1024 // 100MB max
-    }
+    limits: { fileSize: 100 * 1024 * 1024 }
 });
 
-// Auth Middleware
-function authMiddleware(req, res, next) {
-    const authHeader = req.headers.authorization;
+// OpenAI client
+const openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY
+});
 
-    if (!authHeader) {
-        return res.status(401).json({
-            error: "TOKEN REQUIRED"
-        });
-    }
+// In-memory storage cho conversation history
+const conversationHistory = new Map();
 
-    const token = authHeader.split(" ")[1];
+// ========================
+// HELPER FUNCTIONS
+// ========================
 
+// Đọc tất cả file .txt từ folder uploads
+async function readAllKnowledgeFiles() {
     try {
-        const decoded = jwt.verify(
-            token,
-            process.env.JWT_SECRET
-        );
-
-        req.user = decoded;
-        next();
-
-    } catch (error) {
-        return res.status(401).json({
-            error: "INVALID TOKEN"
-        });
-    }
-}
-
-// Helper: Đọc file .txt với streaming (tối ưu cho file lớn)
-async function readTextFileChunked(filePath, chunkSize = 8192) {
-    const chunks = [];
-    const stream = createReadStream(filePath, { encoding: "utf-8" });
-
-    return new Promise((resolve, reject) => {
-        stream.on("data", (chunk) => {
-            chunks.push(chunk);
-        });
-
-        stream.on("end", () => {
-            resolve(chunks.join(""));
-        });
-
-        stream.on("error", reject);
-    });
-}
-
-// Helper: Xử lý file text nhanh
-async function processTextFile(filePath) {
-    try {
-        const content = await readTextFileChunked(filePath);
+        const uploadDir = path.join(__dirname, "uploads");
         
-        // Split thành chunks nhỏ để xử lý
-        const lines = content.split("\n");
-        const chunkData = {
-            totalLines: lines.length,
-            fileSize: (await fs.stat(filePath)).size,
-            preview: lines.slice(0, 10).join("\n") // 10 dòng đầu
-        };
+        if (!fsSync.existsSync(uploadDir)) {
+            return "";
+        }
 
-        console.log(`✓ TXT processed: ${lines.length} lines, ${chunkData.fileSize} bytes`);
-        return chunkData;
+        const files = await fs.readdir(uploadDir);
+        const txtFiles = files.filter(f => f.toLowerCase().endsWith(".txt"));
+
+        let allContent = "";
+
+        for (const file of txtFiles) {
+            try {
+                const filePath = path.join(uploadDir, file);
+                const content = await fs.readFile(filePath, "utf-8");
+                allContent += `\n\n【${file}】\n${content}`;
+            } catch (err) {
+                console.error(`Lỗi đọc file ${file}:`, err.message);
+            }
+        }
+
+        return allContent;
 
     } catch (error) {
-        console.error("Error processing TXT:", error.message);
-        throw error;
+        console.error("Lỗi đọc knowledge files:", error.message);
+        return "";
+    }
+}
+
+// Tìm câu trả lời từ file .txt
+async function searchInKnowledgeBase(question) {
+    const knowledge = await readAllKnowledgeFiles();
+
+    if (!knowledge) return null;
+
+    // Tách câu hỏi thành keywords
+    const keywords = question
+        .toLowerCase()
+        .split(/\s+/)
+        .filter(w => w.length > 2);
+
+    // Tìm những dòng có chứa keywords
+    const lines = knowledge.split("\n");
+    const relevantLines = [];
+
+    for (const line of lines) {
+        const lineContent = line.toLowerCase();
+        const matchCount = keywords.filter(kw => lineContent.includes(kw)).length;
+        
+        if (matchCount > 0) {
+            relevantLines.push({
+                text: line.trim(),
+                matches: matchCount
+            });
+        }
+    }
+
+    // Sort by relevance
+    relevantLines.sort((a, b) => b.matches - a.matches);
+
+    // Trả về top 5 dòng phù hợp nhất
+    if (relevantLines.length > 0) {
+        const result = relevantLines
+            .slice(0, 5)
+            .map(r => r.text)
+            .filter(t => t.length > 0)
+            .join("\n");
+
+        return result.length > 0 ? result : null;
+    }
+
+    return null;
+}
+
+// Gọi OpenAI GPT
+async function callOpenAI(messages) {
+    try {
+        const response = await openai.chat.completions.create({
+            model: "gpt-3.5-turbo",
+            messages: messages,
+            temperature: 0.7,
+            max_tokens: 500
+        });
+
+        return response.choices[0].message.content;
+
+    } catch (error) {
+        console.error("OpenAI error:", error.message);
+        return "Xin lỗi, không thể kết nối với OpenAI API.";
     }
 }
 
@@ -94,156 +132,148 @@ async function processTextFile(filePath) {
 // ROUTES
 // ========================
 
-// Upload endpoint - Hỗ trợ upload 1 file hoặc nhiều files
-app.post(
-    "/api/upload",
-    authMiddleware,
-    upload.array("files", 10), // Max 10 files
-    async (req, res) => {
-        try {
-            if (!req.files || req.files.length === 0) {
-                return res.status(400).json({
-                    error: "NO FILES"
-                });
-            }
+// Serve static files
+app.use(express.static("public"));
 
-            const results = [];
-
-            // Xử lý từng file
-            for (const file of req.files) {
-                const tempPath = file.path;
-                const originalName = file.originalname;
-                const targetPath = path.join("uploads", originalName);
-
-                try {
-                    // Rename file
-                    await fs.rename(tempPath, targetPath);
-
-                    let fileData = {
-                        filename: originalName,
-                        size: file.size,
-                        status: "uploaded"
-                    };
-
-                    // TXT File Processing
-                    if (originalName.toLowerCase().endsWith(".txt")) {
-                        const txtData = await processTextFile(targetPath);
-                        fileData = {
-                            ...fileData,
-                            type: "text",
-                            ...txtData
-                        };
-                    }
-                    // PDF File Processing (khi cần)
-                    else if (originalName.toLowerCase().endsWith(".pdf")) {
-                        fileData.type = "pdf";
-                        // TODO: Implement PDF processing
-                    }
-
-                    results.push(fileData);
-                    console.log(`✓ File processed: ${originalName}`);
-
-                } catch (fileError) {
-                    console.error(`✗ Error processing ${originalName}:`, fileError.message);
-                    results.push({
-                        filename: originalName,
-                        status: "error",
-                        error: fileError.message
-                    });
-                }
-            }
-
-            res.json({
-                success: true,
-                totalFiles: results.length,
-                files: results
-            });
-
-        } catch (error) {
-            console.error("Upload error:", error);
-            res.status(500).json({
-                error: "UPLOAD FAILED",
-                details: error.message
-            });
+// Upload endpoint - KHÔNG cần authentication
+app.post("/upload", upload.single("file"), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: "NO FILE" });
         }
+
+        const tempPath = req.file.path;
+        const originalName = req.file.originalname;
+        const targetPath = path.join("uploads", originalName);
+
+        // Rename file
+        await fs.rename(tempPath, targetPath);
+
+        console.log(`✓ File uploaded: ${originalName}`);
+
+        res.json({
+            success: true,
+            filename: originalName
+        });
+
+    } catch (error) {
+        console.error("Upload error:", error);
+        res.status(500).json({
+            error: "UPLOAD FAILED",
+            details: error.message
+        });
     }
-);
+});
 
-// Get file content endpoint - Đọc file tối ưu
-app.get(
-    "/api/file/:filename",
-    authMiddleware,
-    async (req, res) => {
-        try {
-            const filename = req.params.filename;
-            const filePath = path.join("uploads", filename);
+// Chat endpoint - Trả lời dựa vào file hoặc GPT
+app.post("/chat", async (req, res) => {
+    try {
+        const { message, sessionId } = req.body;
 
-            // Security: Prevent directory traversal
-            if (!filePath.startsWith(path.resolve("uploads"))) {
-                return res.status(403).json({ error: "FORBIDDEN" });
-            }
-
-            const stats = await fs.stat(filePath);
-
-            if (!stats.isFile()) {
-                return res.status(404).json({ error: "NOT FOUND" });
-            }
-
-            // Stream file nếu >1MB, load nếu <1MB
-            if (stats.size > 1024 * 1024) {
-                const stream = createReadStream(filePath);
-                res.setHeader("Content-Type", "text/plain");
-                stream.pipe(res);
-            } else {
-                const content = await fs.readFile(filePath, "utf-8");
-                res.json({
-                    filename,
-                    size: stats.size,
-                    content
-                });
-            }
-
-        } catch (error) {
-            console.error("File read error:", error);
-            res.status(500).json({
-                error: "READ FAILED",
-                details: error.message
-            });
+        if (!message) {
+            return res.status(400).json({ error: "NO MESSAGE" });
         }
+
+        const currentSessionId = sessionId || uuidv4();
+
+        // Lấy history
+        let history = conversationHistory.get(currentSessionId) || [];
+
+        // 1️⃣ TÌM KIẾM TRONG FILE .TXT
+        console.log(`\n🔍 Searching: "${message}"`);
+        const knowledgeResult = await searchInKnowledgeBase(message);
+
+        let reply = "";
+
+        if (knowledgeResult) {
+            // Tìm được từ file → Trả lời dựa vào file
+            console.log("✓ Found in knowledge base");
+            
+            const systemPrompt = `Bạn là trợ lý AI của Bệnh viện Đa khoa Khu vực Tháp Mười.
+Dựa vào thông tin sau từ cơ sở dữ liệu bệnh viện, hãy trả lời câu hỏi của người dùng:
+
+【THÔNG TIN TỪ FILE】
+${knowledgeResult}
+
+Hãy trả lời ngắn gọn, chính xác dựa vào thông tin trên. Nếu thông tin không đủ, hãy nói rõ.`;
+
+            const messages = [
+                { role: "system", content: systemPrompt },
+                { role: "user", content: message }
+            ];
+
+            reply = await callOpenAI(messages);
+
+        } else {
+            // Không tìm được → Dùng GPT để trả lời general
+            console.log("✗ Not found in knowledge base, using GPT");
+            
+            history.push({ role: "user", content: message });
+
+            const messages = [
+                {
+                    role: "system",
+                    content: "Bạn là trợ lý AI của Bệnh viện Đa khoa Khu vực Tháp Mười. Hãy trả lời các câu hỏi một cách thân thiện và chuyên nghiệp."
+                },
+                ...history
+            ];
+
+            reply = await callOpenAI(messages);
+        }
+
+        // Lưu vào history
+        history.push({ role: "user", content: message });
+        history.push({ role: "assistant", content: reply });
+        conversationHistory.set(currentSessionId, history);
+
+        res.json({
+            reply: reply,
+            sessionId: currentSessionId,
+            source: knowledgeResult ? "knowledge_base" : "gpt"
+        });
+
+    } catch (error) {
+        console.error("Chat error:", error);
+        res.status(500).json({
+            error: "CHAT FAILED",
+            details: error.message
+        });
     }
-);
+});
+
+// History endpoint
+app.get("/history/:sessionId", (req, res) => {
+    const history = conversationHistory.get(req.params.sessionId) || [];
+    res.json(history);
+});
 
 // List uploaded files
-app.get(
-    "/api/files",
-    authMiddleware,
-    async (req, res) => {
-        try {
-            const files = await fs.readdir("uploads");
-            const fileStats = await Promise.all(
-                files.map(async (file) => {
-                    const stats = await fs.stat(path.join("uploads", file));
-                    return {
-                        name: file,
-                        size: stats.size,
-                        createdAt: stats.birthtime
-                    };
-                })
-            );
-
-            res.json({
-                totalFiles: fileStats.length,
-                files: fileStats
-            });
-
-        } catch (error) {
-            res.status(500).json({
-                error: "LIST FAILED",
-                details: error.message
-            });
+app.get("/files", async (req, res) => {
+    try {
+        const uploadDir = path.join(__dirname, "uploads");
+        
+        if (!fsSync.existsSync(uploadDir)) {
+            return res.json({ files: [] });
         }
+
+        const files = await fs.readdir(uploadDir);
+        const fileStats = await Promise.all(
+            files.map(async (file) => {
+                const stats = await fs.stat(path.join(uploadDir, file));
+                return {
+                    name: file,
+                    size: stats.size,
+                    createdAt: stats.birthtime
+                };
+            })
+        );
+
+        res.json({ files: fileStats });
+
+    } catch (error) {
+        res.status(500).json({ error: "LIST FAILED" });
     }
-);
+});
 
 // ========================
 // SERVER START
@@ -251,11 +281,13 @@ app.get(
 
 const PORT = process.env.PORT || 3000;
 
-// Tạo thư mục uploads nếu chưa tồn tại
+// Tạo thư mục uploads
 const uploadDir = path.join(__dirname, "uploads");
-fs.mkdir(uploadDir, { recursive: true }).catch(console.error);
+fsSync.mkdir(uploadDir, { recursive: true }, (err) => {
+    if (err) console.error("Lỗi tạo folder uploads:", err);
+});
 
 app.listen(PORT, () => {
-    console.log(`🚀 NVBE-AI running at port ${PORT}`);
-    console.log(`📁 Upload directory: ${uploadDir}`);
+    console.log(`\n🚀 NVBE-AI running at http://localhost:${PORT}`);
+    console.log(`📁 Upload directory: ${uploadDir}\n`);
 });
