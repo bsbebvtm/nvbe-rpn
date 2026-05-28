@@ -24,7 +24,7 @@ const upload = multer({
     limits: { fileSize: 100 * 1024 * 1024 }
 });
 
-// OpenAI client
+// OpenAI client - SỬ DỤNG GPT-4 MINI (RẺ HƠN)
 const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY
 });
@@ -123,12 +123,12 @@ async function searchInKnowledgeBase(question) {
     return null;
 }
 
-// Gọi OpenAI GPT
+// Gọi OpenAI GPT-4 MINI (RẺ & NHANH)
 async function callOpenAI(messages) {
     try {
-        console.log("🤖 Calling OpenAI...");
+        console.log("🤖 Calling OpenAI GPT-4 MINI...");
         const response = await openai.chat.completions.create({
-            model: "gpt-3.5-turbo",
+            model: "gpt-4o-mini",  // ✅ GPT-4 MINI - RẺ HƠN & NHANH HƠN
             messages: messages,
             temperature: 0.7,
             max_tokens: 500
@@ -140,7 +140,18 @@ async function callOpenAI(messages) {
 
     } catch (error) {
         console.error("❌ OpenAI error:", error.message);
-        return "Xin lỗi, không thể kết nối với OpenAI API. Vui lòng kiểm tra OPENAI_API_KEY.";
+        
+        // Nếu lỗi API key
+        if (error.message.includes("401") || error.message.includes("Unauthorized")) {
+            return "❌ Lỗi: OPENAI_API_KEY không hợp lệ hoặc không có quyền. Vui lòng kiểm tra lại.";
+        }
+        
+        // Nếu lỗi quota
+        if (error.message.includes("429") || error.message.includes("rate_limit")) {
+            return "❌ Lỗi: Vượt quá giới hạn sử dụng OpenAI. Vui lòng thử lại sau.";
+        }
+        
+        return "❌ Xin lỗi, không thể kết nối với OpenAI API.";
     }
 }
 
@@ -244,7 +255,7 @@ Hãy trả lời ngắn gọn, chính xác dựa vào thông tin trên. Nếu th
 
         } else {
             // Không tìm được → Dùng GPT để trả lời general
-            console.log("🤖 Using GPT (no knowledge found)");
+            console.log("🤖 Using GPT-4 MINI (no knowledge found)");
             source = "gpt";
             
             history.push({ role: "user", content: message });
@@ -335,6 +346,7 @@ app.listen(PORT, () => {
     console.log(`\n${"=".repeat(50)}`);
     console.log(`🚀 NVBE-AI running at http://localhost:${PORT}`);
     console.log(`📁 Upload directory: ${uploadDir}`);
+    console.log(`🤖 Model: GPT-4 MINI (gpt-4o-mini) - RẺ & NHANH`);
     console.log(`🔑 OpenAI API Key: ${process.env.OPENAI_API_KEY ? "✅ SET" : "❌ NOT SET"}`);
     console.log(`${"=".repeat(50)}\n`);
 });
