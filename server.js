@@ -11,7 +11,7 @@ const { v4: uuidv4 } = require("uuid");
 const app = express();
 
 // ========================
-// MIDDLEWARE - RẤT QUAN TRỌNG!
+// MIDDLEWARE
 // ========================
 
 app.use(express.json({ limit: "50mb" }));
@@ -24,111 +24,158 @@ const upload = multer({
     limits: { fileSize: 100 * 1024 * 1024 }
 });
 
-// OpenAI client - SỬ DỤNG GPT-4 MINI (RẺ HƠN)
+// OpenAI client - GPT-4 MINI
 const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY
 });
 
 // In-memory storage
 const conversationHistory = new Map();
+const knowledgeCache = new Map();
 
 // ========================
 // HELPER FUNCTIONS
 // ========================
 
-// Đọc tất cả file .txt từ folder uploads
-async function readAllKnowledgeFiles() {
+// Parse TSV file (Tab-Separated Values)
+async function parseTSVFile(filePath) {
+    try {
+        const content = await fs.readFile(filePath, "utf-8");
+        const lines = content.split("\n").filter(line => line.trim());
+        const headers = lines[0].split("\t");
+        
+        const rows = [];
+        for (let i = 1; i < lines.length; i++) {
+            const cells = lines[i].split("\t");
+            const row = {};
+            headers.forEach((header, index) => {
+                row[header.trim()] = cells[index] ? cells[index].trim() : "";
+            });
+            rows.push(row);
+        }
+        
+        return { headers, rows };
+    } catch (error) {
+        console.error(`Error parsing TSV ${filePath}:`, error.message);
+        return null;
+    }
+}
+
+// Load và cache tất cả knowledge files
+async function loadKnowledgeBase() {
     try {
         const uploadDir = path.join(__dirname, "uploads");
         
         if (!fsSync.existsSync(uploadDir)) {
-            console.log("📁 Uploads folder not exists yet");
-            return "";
+            return;
         }
 
         const files = await fs.readdir(uploadDir);
         const txtFiles = files.filter(f => f.toLowerCase().endsWith(".txt"));
 
-        console.log(`📖 Found ${txtFiles.length} .txt files: ${txtFiles.join(", ")}`);
-
-        let allContent = "";
-
         for (const file of txtFiles) {
-            try {
-                const filePath = path.join(uploadDir, file);
-                const content = await fs.readFile(filePath, "utf-8");
-                console.log(`✓ Read file: ${file} (${content.length} chars)`);
-                allContent += `\n\n【${file}】\n${content}`;
-            } catch (err) {
-                console.error(`✗ Error reading ${file}:`, err.message);
+            const filePath = path.join(uploadDir, file);
+            console.log(`📖 Loading: ${file}`);
+            
+            const data = await parseTSVFile(filePath);
+            if (data) {
+                knowledgeCache.set(file, data);
+                console.log(`✅ Loaded ${file}: ${data.rows.length} rows`);
             }
         }
 
-        return allContent;
-
     } catch (error) {
-        console.error("❌ Error reading knowledge files:", error.message);
-        return "";
+        console.error("Error loading knowledge base:", error.message);
     }
 }
 
-// Tìm câu trả lời từ file .txt
+// Tìm kiếm trong knowledge base
 async function searchInKnowledgeBase(question) {
-    const knowledge = await readAllKnowledgeFiles();
-
-    if (!knowledge) {
-        console.log("⚠️  No knowledge base content");
+    if (knowledgeCache.size === 0) {
+        console.log("⚠️  Knowledge base is empty");
         return null;
     }
 
-    // Tách câu hỏi thành keywords
     const keywords = question
         .toLowerCase()
         .split(/\s+/)
         .filter(w => w.length > 2);
 
-    console.log(`🔍 Keywords: ${keywords.join(", ")}`);
+    console.log(`🔍 Searching with keywords: ${keywords.join(", ")}`);
 
-    // Tìm những dòng có chứa keywords
-    const lines = knowledge.split("\n");
-    const relevantLines = [];
+    let results = [];
 
-    for (const line of lines) {
-        const lineContent = line.toLowerCase();
-        const matchCount = keywords.filter(kw => lineContent.includes(kw)).length;
-        
-        if (matchCount > 0 && line.trim().length > 0) {
-            relevantLines.push({
-                text: line.trim(),
-                matches: matchCount
-            });
+    // Tìm trong mỗi file
+    for (const [fileName, fileData] of knowledgeCache) {
+        const { rows } = fileData;
+
+        for (const row of rows) {
+            let matchScore = 0;
+            let matchedFields = [];
+
+            // Tính điểm match dựa vào từng column
+            for (const [key, value] of Object.entries(row)) {
+                const lowerValue = value.toLowerCase();
+                for (const keyword of keywords) {
+                    if (lowerValue.includes(keyword)) {
+                        matchScore++;
+                        if (!matchedFields.includes(key)) {
+                            matchedFields.push(key);
+                        }
+                    }
+                }
+            }
+
+            if (matchScore > 0) {
+                results.push({
+                    file: fileName,
+                    row: row,
+                    score: matchScore,
+                    fields: matchedFields
+                });
+            }
         }
     }
 
-    // Sort by relevance
-    relevantLines.sort((a, b) => b.matches - a.matches);
+    // Sort by score
+    results.sort((a, b) => b.score - a.score);
 
-    // Trả về top 5 dòng phù hợp nhất
-    if (relevantLines.length > 0) {
-        const result = relevantLines
-            .slice(0, 5)
-            .map(r => r.text)
-            .join("\n");
-
-        console.log(`✅ Found ${relevantLines.length} relevant lines`);
-        return result.length > 0 ? result : null;
+    if (results.length > 0) {
+        console.log(`✅ Found ${results.length} matching rows`);
+        return results.slice(0, 5); // Top 5
     }
 
-    console.log("⚠️  No matching lines found");
+    console.log("⚠️  No matching rows found");
     return null;
 }
 
-// Gọi OpenAI GPT-4 MINI (RẺ & NHANH)
+// Format search results to readable text
+function formatSearchResults(results) {
+    if (!results || results.length === 0) return null;
+
+    let formattedText = "【THÔNG TIN TỪ DATABASE BỆNH VIỆN】\n\n";
+
+    results.forEach((result, index) => {
+        formattedText += `【${result.file}】 - Kết quả ${index + 1}\n`;
+        
+        for (const [key, value] of Object.entries(result.row)) {
+            if (value && value.trim().length > 0) {
+                formattedText += `${key}: ${value}\n`;
+            }
+        }
+        
+        formattedText += "\n";
+    });
+
+    return formattedText;
+}
+
+// Gọi OpenAI GPT-4 MINI
 async function callOpenAI(messages) {
     try {
         console.log("🤖 Calling OpenAI GPT-4 MINI...");
         const response = await openai.chat.completions.create({
-            model: "gpt-4o-mini",  // ✅ GPT-4 MINI - RẺ HƠN & NHANH HƠN
+            model: "gpt-4o-mini",
             messages: messages,
             temperature: 0.7,
             max_tokens: 500
@@ -141,14 +188,8 @@ async function callOpenAI(messages) {
     } catch (error) {
         console.error("❌ OpenAI error:", error.message);
         
-        // Nếu lỗi API key
-        if (error.message.includes("401") || error.message.includes("Unauthorized")) {
-            return "❌ Lỗi: OPENAI_API_KEY không hợp lệ hoặc không có quyền. Vui lòng kiểm tra lại.";
-        }
-        
-        // Nếu lỗi quota
-        if (error.message.includes("429") || error.message.includes("rate_limit")) {
-            return "❌ Lỗi: Vượt quá giới hạn sử dụng OpenAI. Vui lòng thử lại sau.";
+        if (error.message.includes("401")) {
+            return "❌ Lỗi: OPENAI_API_KEY không hợp lệ.";
         }
         
         return "❌ Xin lỗi, không thể kết nối với OpenAI API.";
@@ -159,18 +200,16 @@ async function callOpenAI(messages) {
 // ROUTES
 // ========================
 
-// Home
 app.get("/", (req, res) => {
     res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-// Upload endpoint - NO AUTHENTICATION
+// Upload endpoint
 app.post("/upload", upload.single("file"), async (req, res) => {
     console.log("\n📤 UPLOAD REQUEST");
     
     try {
         if (!req.file) {
-            console.log("❌ No file provided");
             return res.status(400).json({ 
                 success: false,
                 error: "NO FILE" 
@@ -181,15 +220,13 @@ app.post("/upload", upload.single("file"), async (req, res) => {
         const originalName = req.file.originalname;
         const targetPath = path.join("uploads", originalName);
 
-        console.log(`📁 Temp path: ${tempPath}`);
-        console.log(`📁 Target path: ${targetPath}`);
-
-        // Rename file
         await fs.rename(tempPath, targetPath);
-
-        // Verify file exists
         const stats = await fs.stat(targetPath);
-        console.log(`✅ File uploaded successfully: ${originalName} (${stats.size} bytes)`);
+        
+        console.log(`✅ File uploaded: ${originalName} (${stats.size} bytes)`);
+
+        // Reload knowledge base
+        await loadKnowledgeBase();
 
         res.json({
             success: true,
@@ -216,35 +253,31 @@ app.post("/chat", async (req, res) => {
         const { message, sessionId } = req.body;
 
         if (!message) {
-            console.log("❌ No message provided");
             return res.status(400).json({ error: "NO MESSAGE" });
         }
 
         console.log(`👤 User: "${message}"`);
 
         const currentSessionId = sessionId || uuidv4();
-
-        // Lấy history
         let history = conversationHistory.get(currentSessionId) || [];
 
-        // 1️⃣ TÌM KIẾM TRONG FILE .TXT
-        const knowledgeResult = await searchInKnowledgeBase(message);
-
+        // TÌM KIẾM TRONG KNOWLEDGE BASE
+        const searchResults = await searchInKnowledgeBase(message);
         let reply = "";
         let source = "gpt";
 
-        if (knowledgeResult) {
-            // Tìm được từ file → Trả lời dựa vào file
+        if (searchResults && searchResults.length > 0) {
             console.log("📖 Using KNOWLEDGE BASE");
             source = "knowledge_base";
             
+            const formattedResults = formatSearchResults(searchResults);
+            
             const systemPrompt = `Bạn là trợ lý AI của Bệnh viện Đa khoa Khu vực Tháp Mười.
-Dựa vào thông tin sau từ cơ sở dữ liệu bệnh viện, hãy trả lời câu hỏi của người dùng:
+Dựa vào thông tin sau từ cơ sở dữ liệu bệnh viện, hãy trả lời câu hỏi của người dùng một cách chính xác và chi tiết:
 
-【THÔNG TIN TỪ FILE】
-${knowledgeResult}
+${formattedResults}
 
-Hãy trả lời ngắn gọn, chính xác dựa vào thông tin trên. Nếu thông tin không đủ, hãy nói rõ.`;
+Hãy trả lời dựa trên thông tin đã cung cấp. Nếu không tìm thấy thông tin liên quan, hãy nói rõ.`;
 
             const messages = [
                 { role: "system", content: systemPrompt },
@@ -254,7 +287,6 @@ Hãy trả lời ngắn gọn, chính xác dựa vào thông tin trên. Nếu th
             reply = await callOpenAI(messages);
 
         } else {
-            // Không tìm được → Dùng GPT để trả lời general
             console.log("🤖 Using GPT-4 MINI (no knowledge found)");
             source = "gpt";
             
@@ -300,7 +332,7 @@ app.get("/history/:sessionId", (req, res) => {
     res.json(history);
 });
 
-// List uploaded files
+// Files endpoint
 app.get("/files", async (req, res) => {
     try {
         const uploadDir = path.join(__dirname, "uploads");
@@ -316,7 +348,8 @@ app.get("/files", async (req, res) => {
                 return {
                     name: file,
                     size: stats.size,
-                    createdAt: stats.birthtime
+                    createdAt: stats.birthtime,
+                    cached: knowledgeCache.has(file)
                 };
             })
         );
@@ -334,7 +367,6 @@ app.get("/files", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 
-// Tạo thư mục uploads
 const uploadDir = path.join(__dirname, "uploads");
 fsSync.mkdir(uploadDir, { recursive: true }, (err) => {
     if (err) console.error("❌ Error creating uploads folder:", err);
@@ -342,11 +374,16 @@ fsSync.mkdir(uploadDir, { recursive: true }, (err) => {
 });
 
 // Start server
-app.listen(PORT, () => {
-    console.log(`\n${"=".repeat(50)}`);
+app.listen(PORT, async () => {
+    console.log(`\n${"=".repeat(60)}`);
     console.log(`🚀 NVBE-AI running at http://localhost:${PORT}`);
     console.log(`📁 Upload directory: ${uploadDir}`);
-    console.log(`🤖 Model: GPT-4 MINI (gpt-4o-mini) - RẺ & NHANH`);
+    console.log(`🤖 Model: GPT-4 MINI (gpt-4o-mini)`);
     console.log(`🔑 OpenAI API Key: ${process.env.OPENAI_API_KEY ? "✅ SET" : "❌ NOT SET"}`);
-    console.log(`${"=".repeat(50)}\n`);
+    console.log(`${"=".repeat(60)}\n`);
+    
+    // Load knowledge base on startup
+    console.log("📚 Loading knowledge base...");
+    await loadKnowledgeBase();
+    console.log("✅ Knowledge base ready!\n");
 });
